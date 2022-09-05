@@ -207,7 +207,7 @@ pub struct Merino {
     users: Arc<Vec<User>>,
     auth_methods: Arc<Vec<u8>>,
     // Timeout for connections
-    timeout: Option<Duration>,
+    timeout: Duration,
     allowed_destinations: Arc<Option<HashSet<FilterEntry>>>,
 }
 
@@ -218,7 +218,7 @@ impl Merino {
         ip: &str,
         auth_methods: Vec<u8>,
         users: Vec<User>,
-        timeout: Option<Duration>,
+        timeout: Duration,
         allowed_destinations: Option<HashSet<FilterEntry>>,
     ) -> io::Result<Self> {
         info!("Listening on {}:{}", ip, port);
@@ -266,7 +266,7 @@ pub struct SOCKClient<T: AsyncRead + AsyncWrite + Send + Unpin + 'static> {
     auth_methods: Arc<Vec<u8>>,
     authed_users: Arc<Vec<User>>,
     socks_version: u8,
-    timeout: Option<Duration>,
+    timeout: Duration,
     allowed_destinations: Arc<Option<HashSet<FilterEntry>>>,
 }
 
@@ -279,7 +279,7 @@ where
         stream: T,
         authed_users: Arc<Vec<User>>,
         auth_methods: Arc<Vec<u8>>,
-        timeout: Option<Duration>,
+        timeout: Duration,
         allowed_destinations: Arc<Option<HashSet<FilterEntry>>>,
     ) -> Self {
         SOCKClient {
@@ -294,7 +294,7 @@ where
     }
 
     /// Create a new SOCKClient with no auth
-    pub fn new_no_auth(stream: T, timeout: Option<Duration>, allowed_destinations: Option<HashSet<FilterEntry>>,) -> Self {
+    pub fn new_no_auth(stream: T, timeout: Duration, allowed_destinations: Option<HashSet<FilterEntry>>,) -> Self {
         // FIXME: use option here
         let authed_users: Arc<Vec<User>> = Arc::new(Vec::new());
         let mut no_auth: Vec<u8> = Vec::new();
@@ -467,15 +467,9 @@ where
                     )));
                 }
 
-                let time_out = if let Some(time_out) = self.timeout {
-                    time_out
-                } else {
-                    Duration::from_millis(50)
-                };
-
                 let mut target =
                     timeout(
-                        time_out,
+                        self.timeout,
                         async move { TcpStream::connect(&sock_addr[..]).await },
                     )
                     .await

@@ -11,6 +11,7 @@ use std::env;
 use std::error::Error;
 use std::os::unix::prelude::MetadataExt;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Logo to be printed at when merino is run
 const LOGO: &str = r"
@@ -26,12 +27,12 @@ const LOGO: &str = r"
 #[derive(Parser, Debug)]
 #[clap(version)]
 #[clap(group(
-    ArgGroup::new("auth")
-        .required(true)
-        .args(&["no-auth", "users"]),
+ArgGroup::new("auth")
+.required(true)
+.args(& ["no-auth", "users"]),
 ), group(
-    ArgGroup::new("log")
-        .args(&["verbosity", "quiet"]),
+ArgGroup::new("log")
+.args(& ["verbosity", "quiet"]),
 ))]
 struct Opt {
     #[clap(short, long, default_value_t = 1080)]
@@ -66,6 +67,10 @@ struct Opt {
     /// CSV File with allowed domains
     #[clap(short, long)]
     allowed: Option<PathBuf>,
+
+    /// Timeout for connections in milliseconds
+    #[clap(short, long, default_value_t = 100)]
+    timeout: u16,
 }
 
 #[tokio::main]
@@ -186,7 +191,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Create proxy server
-    let mut merino = Merino::new(opt.port, &opt.ip, auth_methods, authed_users, None, allowed_destinations).await?;
+    let mut merino = Merino::new(opt.port, &opt.ip, auth_methods, authed_users, Duration::from_millis(opt.timeout.into()), allowed_destinations).await?;
 
     // Start Proxies
     merino.serve().await;
