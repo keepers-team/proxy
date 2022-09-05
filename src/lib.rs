@@ -580,7 +580,14 @@ async fn addr_to_socket(addr_type: &AddrType, addr: &[u8], port: u16) -> io::Res
             domain.push(':');
             domain.push_str(&port.to_string());
 
-            Ok(lookup_host(domain).await?.collect())
+            let res = lookup_host(domain.clone()).await;
+            match res {
+                Ok(it) => Ok(it.collect()),
+                Err(e) => {
+                    error!("Failed to resolve {}", domain);
+                    Err(e)
+                }
+            }
         }
     }
 }
