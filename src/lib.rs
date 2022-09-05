@@ -5,8 +5,9 @@ extern crate serde_derive;
 extern crate log;
 use snafu::Snafu;
 
+use std::collections::HashSet;
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -23,6 +24,12 @@ const RESERVED: u8 = 0x00;
 pub struct User {
     pub username: String,
     password: String,
+}
+
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Deserialize)]
+pub struct FilterEntry {
+    pub host: String,
+    pub port: u16,
 }
 
 pub struct SocksReply {
@@ -201,6 +208,7 @@ pub struct Merino {
     auth_methods: Arc<Vec<u8>>,
     // Timeout for connections
     timeout: Option<Duration>,
+    allowed_destinations: Arc<Option<HashSet<FilterEntry>>>,
 }
 
 impl Merino {
@@ -211,6 +219,7 @@ impl Merino {
         auth_methods: Vec<u8>,
         users: Vec<User>,
         timeout: Option<Duration>,
+        allowed_destinations: Option<HashSet<FilterEntry>>,
     ) -> io::Result<Self> {
         info!("Listening on {}:{}", ip, port);
         Ok(Merino {
@@ -218,6 +227,7 @@ impl Merino {
             auth_methods: Arc::new(auth_methods),
             users: Arc::new(users),
             timeout,
+            allowed_destinations: Arc::new(allowed_destinations),
         })
     }
 
@@ -227,8 +237,9 @@ impl Merino {
             let users = self.users.clone();
             let auth_methods = self.auth_methods.clone();
             let timeout = self.timeout.clone();
+            let allowed_destinations = self.allowed_destinations.clone();
             tokio::spawn(async move {
-                let mut client = SOCKClient::new(stream, users, auth_methods, timeout);
+                let mut client = SOCKClient::new(stream, users, auth_methods, timeout, allowed_destinations);
                 match client.init().await {
                     Ok(_) => {}
                     Err(error) => {
@@ -256,6 +267,7 @@ pub struct SOCKClient<T: AsyncRead + AsyncWrite + Send + Unpin + 'static> {
     authed_users: Arc<Vec<User>>,
     socks_version: u8,
     timeout: Option<Duration>,
+    allowed_destinations: Arc<Option<HashSet<FilterEntry>>>,
 }
 
 impl<T> SOCKClient<T>
@@ -268,6 +280,7 @@ where
         authed_users: Arc<Vec<User>>,
         auth_methods: Arc<Vec<u8>>,
         timeout: Option<Duration>,
+        allowed_destinations: Arc<Option<HashSet<FilterEntry>>>,
     ) -> Self {
         SOCKClient {
             stream,
@@ -276,16 +289,18 @@ where
             authed_users,
             auth_methods,
             timeout,
+            allowed_destinations,
         }
     }
 
     /// Create a new SOCKClient with no auth
-    pub fn new_no_auth(stream: T, timeout: Option<Duration>) -> Self {
+    pub fn new_no_auth(stream: T, timeout: Option<Duration>, allowed_destinations: Option<HashSet<FilterEntry>>,) -> Self {
         // FIXME: use option here
         let authed_users: Arc<Vec<User>> = Arc::new(Vec::new());
         let mut no_auth: Vec<u8> = Vec::new();
         no_auth.push(AuthMethods::NoAuth as u8);
         let auth_methods: Arc<Vec<u8>> = Arc::new(no_auth);
+        let allowed_destinations: Arc<Option<HashSet<FilterEntry>>> = Arc::new(allowed_destinations);
 
         SOCKClient {
             stream,
@@ -294,6 +309,7 @@ where
             authed_users,
             auth_methods,
             timeout,
+            allowed_destinations,
         }
     }
 
@@ -444,6 +460,12 @@ where
                 let sock_addr = addr_to_socket(&req.addr_type, &req.addr, req.port).await?;
 
                 trace!("Connecting to: {:?}", sock_addr);
+                if !is_destination_allowed(&sock_addr, self.allowed_destinations.as_ref()) {
+                    return Err(MerinoError::Io(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "Forbidden address",
+                    )));
+                }
 
                 let time_out = if let Some(time_out) = self.timeout {
                     time_out
@@ -499,6 +521,32 @@ where
             }
         }
         Ok(methods)
+    }
+}
+
+fn is_destination_allowed(
+    received_destinations: &Vec<SocketAddr>,
+    allowed_destinations: &Option<HashSet<FilterEntry>>,
+) -> bool {
+    match allowed_destinations {
+        Some(destinations) => {
+            let allowed: HashSet<SocketAddr> = destinations
+                .iter()
+                .flat_map(|entry| {
+                    let destination = format!("{}:{}", &entry.host, &entry.port.to_string());
+                    let resolved_addresses: HashSet<SocketAddr> =
+                        destination.to_socket_addrs().unwrap().collect();
+                    for address in &resolved_addresses {
+                        trace!("Allowed domain: {}, resolved to {}", destination, address);
+                    }
+                    resolved_addresses
+                })
+                .collect();
+            received_destinations
+                .iter()
+                .any(|dest| allowed.contains(dest))
+        }
+        None => true,
     }
 }
 

@@ -6,6 +6,7 @@ extern crate log;
 
 use clap::{ArgGroup, Parser};
 use merino::*;
+use std::collections::HashSet;
 use std::env;
 use std::error::Error;
 use std::os::unix::prelude::MetadataExt;
@@ -61,6 +62,10 @@ struct Opt {
     /// Do not output any logs (even errors!). Overrides `RUST_LOG`
     #[clap(short)]
     quiet: bool,
+
+    /// CSV File with allowed domains
+    #[clap(short, long)]
+    allowed: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -154,8 +159,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let authed_users = authed_users?;
 
+    let allowed_destinations: Result<Option<HashSet<FilterEntry>>, Box<dyn Error>> = match opt.allowed {
+        Some(allowed_destinations_file) => {
+            let file = std::fs::File::open(allowed_destinations_file)?;
+
+            let mut destinations: HashSet<FilterEntry> = HashSet::new();
+            let mut rdr = csv::Reader::from_reader(file);
+            for result in rdr.deserialize() {
+                let filter_entry: FilterEntry = result?;
+                trace!("Allowed: {:?}", filter_entry);
+                destinations.insert(filter_entry);
+            }
+            Ok(Some(destinations))
+        }
+        _ => Ok(None),
+    };
+
+    let allowed_destinations = allowed_destinations?;
+
+    if let Some(domains) = &allowed_destinations {
+        if domains.is_empty() {
+            warn!("No allowed domains found. Clients will not be able to connect!");
+        } else {
+            info!("Loaded {} allowed domains", domains.len());
+        }
+    }
+
     // Create proxy server
-    let mut merino = Merino::new(opt.port, &opt.ip, auth_methods, authed_users, None).await?;
+    let mut merino = Merino::new(opt.port, &opt.ip, auth_methods, authed_users, None, allowed_destinations).await?;
 
     // Start Proxies
     merino.serve().await;
