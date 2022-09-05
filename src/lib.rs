@@ -7,13 +7,14 @@ use snafu::Snafu;
 
 use std::collections::HashSet;
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, lookup_host};
 use tokio::time::timeout;
+use futures::future::join_all;
 
 /// Version of socks
 const SOCKS_VERSION: u8 = 0x05;
@@ -460,7 +461,7 @@ where
                 let sock_addr = addr_to_socket(&req.addr_type, &req.addr, req.port).await?;
 
                 trace!("Connecting to: {:?}", sock_addr);
-                if !is_destination_allowed(&sock_addr, self.allowed_destinations.as_ref()) {
+                if !is_destination_allowed(&sock_addr, self.allowed_destinations.as_ref()).await {
                     return Err(MerinoError::Io(std::io::Error::new(
                         std::io::ErrorKind::PermissionDenied,
                         "Forbidden address",
@@ -518,27 +519,30 @@ where
     }
 }
 
-fn is_destination_allowed(
+async fn is_destination_allowed(
     received_destinations: &Vec<SocketAddr>,
     allowed_destinations: &Option<HashSet<FilterEntry>>,
 ) -> bool {
     match allowed_destinations {
         Some(destinations) => {
-            let allowed: HashSet<SocketAddr> = destinations
-                .iter()
-                .flat_map(|entry| {
-                    let destination = format!("{}:{}", &entry.host, &entry.port.to_string());
-                    let resolved_addresses: HashSet<SocketAddr> =
-                        destination.to_socket_addrs().unwrap().collect();
-                    for address in &resolved_addresses {
-                        trace!("Allowed domain: {}, resolved to {}", destination, address);
-                    }
-                    resolved_addresses
-                })
-                .collect();
-            received_destinations
-                .iter()
-                .any(|dest| allowed.contains(dest))
+            let mut handles = Vec::with_capacity(destinations.len());
+            for entry in destinations {
+                let destination = format!("{}:{}", &entry.host, &entry.port.to_string());
+                handles.push(lookup_host(destination));
+            }
+            let res: io::Result<Vec<_>> = join_all(handles).await.into_iter().collect();
+            match res {
+                Ok(iters) => {
+                    let allowed: HashSet<SocketAddr> = iters.into_iter().flatten().collect();
+                    received_destinations
+                        .iter()
+                        .any(|dest| allowed.contains(dest))
+                },
+                Err(error) => {
+                    error!("Failed to resolve domains dut to {}", error);
+                    false
+                }
+            }
         }
         None => true,
     }
