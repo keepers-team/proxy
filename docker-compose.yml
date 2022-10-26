@@ -1,0 +1,22 @@
+version: '3.9'
+
+services:
+  merino:
+    image: ghcr.io/keepers-team/proxy:latest
+    container_name: keepers-proxy
+    init: true
+    command:
+      - merino
+      - --no-auth
+      - --ip
+      - "0.0.0.0"
+      - --port
+      - "60789"
+      - --allowed
+      - /allowed.csv
+      - --timeout
+      - "5000"
+    expose:
+      - "60789"
+    volumes:
+      - ./allowed.csv:/allowed.csv
