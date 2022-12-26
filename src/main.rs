@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Allow unauthenticated connections
     if opt.no_auth {
-        auth_methods.push(merino::AuthMethods::NoAuth as u8);
+        auth_methods.push(AuthMethods::NoAuth as u8);
     }
 
     // Enable username/password auth
@@ -150,10 +150,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
 
             if users.is_empty() {
-                error!(
-                    "No users loaded from {:?}. Check configuration.",
-                    &users_file
-                );
+                error!("No users loaded from {:?}. Check configuration.", &users_file);
                 std::process::exit(1);
             }
 
@@ -191,7 +188,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Create proxy server
-    let mut merino = Merino::new(opt.port, &opt.ip, auth_methods, authed_users, Duration::from_millis(opt.timeout.into()), allowed_destinations).await?;
+    let mut merino = Merino::new(
+        opt.port,
+        &opt.ip,
+        auth_methods,
+        authed_users,
+        Duration::from_millis(opt.timeout.into()),
+        allowed_destinations,
+    )
+    .await?;
 
     // Start Proxies
     merino.serve().await;

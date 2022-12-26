@@ -3,8 +3,10 @@
 extern crate serde_derive;
 #[macro_use]
 extern crate log;
+
 use snafu::Snafu;
 
+use futures::future::join_all;
 use std::collections::HashSet;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
@@ -12,9 +14,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, lookup_host};
+use tokio::net::{lookup_host, TcpListener, TcpStream};
 use tokio::time::timeout;
-use futures::future::join_all;
 
 /// Version of socks
 const SOCKS_VERSION: u8 = 0x05;
@@ -246,8 +247,7 @@ impl Merino {
                     Err(error) => {
                         error!("Error! {:?}, client: {:?}", error, client_addr);
 
-                        if let Err(e) = SocksReply::new(error.into()).send(&mut client.stream).await
-                        {
+                        if let Err(e) = SocksReply::new(error.into()).send(&mut client.stream).await {
                             warn!("Failed to send error code: {:?}", e);
                         }
 
@@ -295,7 +295,7 @@ where
     }
 
     /// Create a new SOCKClient with no auth
-    pub fn new_no_auth(stream: T, timeout: Duration, allowed_destinations: Option<HashSet<FilterEntry>>,) -> Self {
+    pub fn new_no_auth(stream: T, timeout: Duration, allowed_destinations: Option<HashSet<FilterEntry>>) -> Self {
         // FIXME: use option here
         let authed_users: Arc<Vec<User>> = Arc::new(Vec::new());
         let mut no_auth: Vec<u8> = Vec::new();
@@ -339,11 +339,7 @@ where
         self.socks_version = header[0];
         self.auth_nmethods = header[1];
 
-        trace!(
-            "Version: {} Auth nmethods: {}",
-            self.socks_version,
-            self.auth_nmethods
-        );
+        trace!("Version: {} Auth nmethods: {}", self.socks_version, self.auth_nmethods);
 
         match self.socks_version {
             SOCKS_VERSION => {
@@ -462,31 +458,25 @@ where
 
                 trace!("Connecting to: {:?}", sock_addr);
                 if !is_destination_allowed(&sock_addr, self.allowed_destinations.as_ref()).await {
-                    return Err(MerinoError::Io(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
+                    return Err(MerinoError::Io(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
                         "Forbidden address",
                     )));
                 }
 
-                let mut target =
-                    timeout(
-                        self.timeout,
-                        async move { TcpStream::connect(&sock_addr[..]).await },
-                    )
+                let mut target = timeout(self.timeout, async move { TcpStream::connect(&sock_addr[..]).await })
                     .await
                     .map_err(|_| MerinoError::Socks(ResponseCode::AddrTypeNotSupported))
                     .map_err(|_| MerinoError::Socks(ResponseCode::AddrTypeNotSupported))??;
 
                 trace!("Connected!");
 
-                SocksReply::new(ResponseCode::Success)
-                    .send(&mut self.stream)
-                    .await?;
+                SocksReply::new(ResponseCode::Success).send(&mut self.stream).await?;
 
                 trace!("copy bidirectional");
                 match tokio::io::copy_bidirectional(&mut self.stream, &mut target).await {
                     // ignore not connected for shutdown error
-                    Err(e) if e.kind() == std::io::ErrorKind::NotConnected => {
+                    Err(e) if e.kind() == io::ErrorKind::NotConnected => {
                         trace!("already closed");
                         Ok(0)
                     }
@@ -494,12 +484,9 @@ where
                     Ok((_s_to_t, t_to_s)) => Ok(t_to_s as usize),
                 }
             }
-            SockCommand::Bind => Err(MerinoError::Io(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "Bind not supported",
-            ))),
-            SockCommand::UdpAssosiate => Err(MerinoError::Io(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
+            SockCommand::Bind => Err(MerinoError::Io(io::Error::new(io::ErrorKind::Unsupported, "Bind not supported"))),
+            SockCommand::UdpAssosiate => Err(MerinoError::Io(io::Error::new(
+                io::ErrorKind::Unsupported,
                 "UdpAssosiate not supported",
             ))),
         }
@@ -519,10 +506,7 @@ where
     }
 }
 
-async fn is_destination_allowed(
-    received_destinations: &Vec<SocketAddr>,
-    allowed_destinations: &Option<HashSet<FilterEntry>>,
-) -> bool {
+async fn is_destination_allowed(received_destinations: &Vec<SocketAddr>, allowed_destinations: &Option<HashSet<FilterEntry>>) -> bool {
     match allowed_destinations {
         Some(destinations) => {
             let mut handles = Vec::with_capacity(destinations.len());
@@ -537,9 +521,7 @@ async fn is_destination_allowed(
             }
 
             let allowed: HashSet<SocketAddr> = found.into_iter().map(Result::unwrap).flatten().collect();
-            received_destinations
-                .iter()
-                .any(|dest| allowed.contains(dest))
+            received_destinations.iter().any(|dest| allowed.contains(dest))
         }
         None => true,
     }
@@ -597,21 +579,13 @@ async fn addr_to_socket(addr_type: &AddrType, addr: &[u8], port: u16) -> io::Res
 fn pretty_print_addr(addr_type: &AddrType, addr: &[u8]) -> String {
     match addr_type {
         AddrType::Domain => String::from_utf8_lossy(addr).to_string(),
-        AddrType::V4 => addr
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect::<Vec<String>>()
-            .join("."),
+        AddrType::V4 => addr.iter().map(std::string::ToString::to_string).collect::<Vec<String>>().join("."),
         AddrType::V6 => {
             let addr_16 = (0..8)
                 .map(|x| (u16::from(addr[(x * 2)]) << 8) | u16::from(addr[(x * 2) + 1]))
                 .collect::<Vec<u16>>();
 
-            addr_16
-                .iter()
-                .map(|x| format!("{:x}", x))
-                .collect::<Vec<String>>()
-                .join(":")
+            addr_16.iter().map(|x| format!("{:x}", x)).collect::<Vec<String>>().join(":")
         }
     }
 }
