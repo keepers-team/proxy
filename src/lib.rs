@@ -530,19 +530,16 @@ async fn is_destination_allowed(
                 let destination = format!("{}:{}", &entry.host, &entry.port.to_string());
                 handles.push(lookup_host(destination));
             }
-            let res: io::Result<Vec<_>> = join_all(handles).await.into_iter().collect();
-            match res {
-                Ok(iters) => {
-                    let allowed: HashSet<SocketAddr> = iters.into_iter().flatten().collect();
-                    received_destinations
-                        .iter()
-                        .any(|dest| allowed.contains(dest))
-                },
-                Err(error) => {
-                    error!("Failed to resolve domains dut to {}", error);
-                    false
-                }
+            let (found, errors): (Vec<_>, Vec<_>) = join_all(handles).await.into_iter().partition(Result::is_ok);
+
+            if !errors.is_empty() {
+                warn!("Can't resolve some addresses");
             }
+
+            let allowed: HashSet<SocketAddr> = found.into_iter().map(Result::unwrap).flatten().collect();
+            received_destinations
+                .iter()
+                .any(|dest| allowed.contains(dest))
         }
         None => true,
     }
